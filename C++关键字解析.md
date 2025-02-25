@@ -179,16 +179,18 @@ int main()
  **(1) `auto` 类型推导规则**
 
 - **`auto` 根据右值类型推导**，但**去掉 `const` 和引用**。
+  - 即基础类型推导，推导结果和初始化表达式一致，忽略引用和const修饰符。如果要保留这些特性，那么需要加上`&`和`const`
+
 - **`auto&` 保持引用类型**，适用于引用变量。
 - **`const auto&` 可保持 `const` 限定**，避免去掉 `const`。
-- **`auto\*` 适用于指针类型**，但 `const` 规则同样适用。
+- **`auto*` 适用于指针类型**，但 `const` 规则同样适用。
 - **`decltype(auto)` 会保持表达式的原始类型**。
 
 **(2) `auto` vs `decltype(auto)`**
 
 | 表达式                                  | 推导类型    |
 | --------------------------------------- | ----------- |
-| `auto x = a;`                           | `int`       |
+| `auto x = a;`(a 是 `const int`)         | `int`       |
 | `auto& x = a;`                          | `int&`      |
 | `const auto x = a;`                     | `const int` |
 | `decltype(auto) x = a;`                 | `const int` |
