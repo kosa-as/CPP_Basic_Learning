@@ -60,22 +60,34 @@ excerpt: 本文综合了我对本科操作系统课程的回顾以及对Linux下
 - 内核态的地址空间分布
 
 ```pgsql
-用户空间（私有）:
-0x0000000000000000
+用户空间（每进程私有）:
+0x0000_0000_0000_0000
    ...
-0x00007fffffffffff ← 用户空间结束
+0x0000_7fff_ffff_ffff  ← 用户空间结束
 
---------------------
+-------------------- 以下为所有进程全局共享的内核空间 --------------------
+
 内核空间（全局共享）:
-0xffff800000000000 ← 内核直接映射区起始
-    |- 直接映射物理内存
-    |- vmalloc 区
+0xffff_8000_0000_0000  ← 内核空间起始
+    |- 直接映射区（physmap, linear mapping）
+    |    0xffff_8000_0000_0000 ~ 0xffff_c7ff_ffff_ffff
+    |- vmemmap 区（struct page 映射区，页框管理的数据结构）
+    |    0xffff_ea00_0000_0000 ~ 0xffff_eeff_ffff_ffff
+    |- vmalloc 区（动态虚拟内存分配，用于内存的动态分配）
+    |    0xffff_c800_0000_0000 ~ 0xffff_dfff_ffff_ffff
     |- 模块映射区
-    |- fixmap
-    |- ioremap
-    |- 内核栈 + task_struct
-    |- 内核代码段（text/data/bss）
-0xffffffffffffffff ← 虚拟地址上限
+    |    0xffff_e000_0000_0000 ~ 0xffff_efff_ffff_ffff
+    |- ioremap 区（PCI/IO设备动态映射，实际位于vmalloc子区）
+    |- 内核镜像区（.text/.data/.bss, KASLR后地址随机）
+    |    0xffffffff_80000000   ~ 0xffffffff_ffffffff
+    |- fixmap 区
+    |    0xffff_fff0_0000_0000 ~ 0xffff_fff0_0fff_ffff
+    |- vsyscall 区（已废弃，仅保留仿真）
+    |    0xffff_ffff_fffc_0000 ~ 0xffff_ffff_fffd_0000
+    |- EFI/ACPI保留区（部分机器有）
+    |    0xffff_ffe0_0000_0000 ~ 0xffff_ffff_ffff_ffff
+    |- 其它保留或架构相关区块
+0xffff_ffff_ffff_ffff  ← 虚拟地址上限
 ```
 
 内核态各段的解释
@@ -88,10 +100,6 @@ excerpt: 本文综合了我对本科操作系统课程的回顾以及对Linux下
 | **内核代码段 & 数据段**                    | 内核自身代码与静态数据区域（内核本身的代码，不可以修改）     |
 | **fixmap 区**                              | 用于映射特定设备地址或中断向量表，具有固定虚拟地址           |
 | **ioremap 映射区**                         | IO 设备的 MMIO 寄存器映射到的虚拟地址                        |
-| **内核栈（per-thread stack）**             | 每个进程在进入内核态后使用的专属内核栈（通常为 16KB）        |
-| **task_struct 等内核结构**                 | 当前进程的调度信息、管理结构等（可通过 `current` 宏访问）    |
-
-
 
 #### 进程的实体表示
 
@@ -124,6 +132,29 @@ task_struct
 **信号处理**：signal是指向 signal_struct的，线程组共享; sighand则是指向sighand_struct（信号处理函数表）
 
 **文件系统**：files指向files_struct，表明打开文件表;而fs则是维护文件系统的信息
+
+##### 进程的状态
+
+- 从操作系统的宏观角度：
+
+  - 创建：正在创建进程，还未就绪
+
+  - 就绪：已准备好、等待被调度上 CPU
+
+  - 运行：正在 CPU 上执行
+
+  - 阻塞：等待 I/O 或资源，不能运行
+
+  - 终止：执行完毕或被终止，等待资源释放
+
+- 从Linux内核的具体实现角度：
+
+  - TASK_RUNNING：可运行，可能在 CPU 上，也可能在 runqueue 中等待
+  - TASK_INTERRUPTIBLE：可被信号打断的睡眠，常见于等待资源、I/O
+  - TASK_UNINTERRUPTIBLE：不可被信号打断的睡眠，如 I/O 阻塞
+  - EXIT_ZOMBIE：已退出，变成僵尸进程，等待父进程回收
+  - __TASK_STOPPED：被 `SIGSTOP` 暂停
+  - __TASK_TRACED：被调试器（如 `gdb`）暂停、单步等状态
 
 #### 进程的创建
 
@@ -170,3 +201,13 @@ ret 恢复程序计数器，跳转回用户/内核执行
 最后，`do_exit()` 调用 `schedule()` 永久让出 CPU，进程不再被调度。
 
 父进程随后通过 `wait()` 或 `waitpid()` 等系统调用获取子进程退出信息，并触发 `release_task()` 对其进行彻底清理，包括释放其 `task_struct`、内核栈、pid 表项等内核资源，从而完成整个进程回收流程。
+
+#### 进程的调度
+
+Linux的调度是基于分时技术的，CPU的时间被分为片，每个进程的执行都是按照片为单位去执行。在进程调度的时候，调度的优先级是基于静态优先级和动态优先级结合的方法来得出的。
+
+- 静态优先级：在进程被创建的时候分配的优先级，他是不可以改变的
+- 动态优先级：调度器在运行过程中根据进程行为动态调整的优先级值，通常是通过CFS（complete Fair Schedule）完全公平调度器来通过`vcputime`来等效动态优先级
+
+
+
